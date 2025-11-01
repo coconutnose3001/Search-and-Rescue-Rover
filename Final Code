@@ -1,0 +1,184 @@
+#include <Servo.h>
+
+//=============================================================================
+// CONFIGURATION VARIABLES - Adjust these values to tune the system
+//=============================================================================
+
+// Servo Range & Speed Configuration
+const int SERVO_MIN = 0;           // Minimum servo angle
+const int SERVO_MAX = 180;         // Maximum servo angle
+const int SERVO_CENTER = 90;       // Center position (middle of ROM)
+const int STEP_SIZE = 2;           // Movement speed (degrees per cycle)
+
+// RC Controller Configuration
+const int DEADZONE = 70;           // Controller deadzone (±)
+const int MID_FRONT_PWM = 1545;    // Center calibration for front channel
+const int MID_BACK_PWM = 1530;     // Center calibration for back channel
+
+// Timing Configuration
+const int LOOP_DELAY = 20;         // Milliseconds per loop cycle
+const int PULSE_TIMEOUT = 25000;   // Timeout for pulseIn function
+
+// Pin Configuration
+const int PIN_CH_FRONT = 23;       // RC channel for front servos
+const int PIN_CH_BACK = 25;        // RC channel for back servos
+const int PIN_SERVO_FL = 11;       // Front Left servo pin
+const int PIN_SERVO_FR = 10;       // Front Right servo pin
+const int PIN_SERVO_BL = 9;        // Back Left servo pin
+const int PIN_SERVO_BR = 8;        // Back Right servo pin
+
+//=============================================================================
+// PROGRAM CODE - Only modify if you know what you're doing
+//=============================================================================
+
+// Servo objects
+Servo frontLeftServo, frontRightServo;   // Controlled by Channel 2
+Servo backLeftServo, backRightServo;     // Controlled by Channel 4
+
+// Position tracking variables
+int frontMasterPos = SERVO_CENTER;   // Front left (Master)
+int frontSlavePos = SERVO_CENTER;    // Front right (Slave)
+int backMasterPos = SERVO_CENTER;    // Back left (Master)
+int backSlavePos = SERVO_CENTER;     // Back right (Slave)
+
+// Direction tracking variables
+int prevFrontState = 0;
+int prevBackState = 0;
+
+// System status flags
+bool initialized = false;     // Tracks if system is initialized
+
+void setup() {
+  // Initialize serial for debugging if needed
+  // Serial.begin(9600);
+  
+  // Attach servos to pins
+  frontLeftServo.attach(PIN_SERVO_FL);
+  frontRightServo.attach(PIN_SERVO_FR);
+  backLeftServo.attach(PIN_SERVO_BL);
+  backRightServo.attach(PIN_SERVO_BR);
+  
+  // Set input pins
+  pinMode(PIN_CH_FRONT, INPUT);
+  pinMode(PIN_CH_BACK, INPUT);
+  
+  // Initialize servos to center position
+  centerAllServos();
+}
+
+void loop() {
+  // Read RC inputs
+  int pwmFront = pulseIn(PIN_CH_FRONT, HIGH, PULSE_TIMEOUT);
+  int pwmBack = pulseIn(PIN_CH_BACK, HIGH, PULSE_TIMEOUT);
+  
+  // Calculate movement states (-1, 0, or 1)
+  int frontState = getMovementState(pwmFront, MID_FRONT_PWM);
+  int backState = getMovementState(pwmBack, MID_BACK_PWM);
+  
+  // Skip input processing if no valid signals received
+  if (pwmFront == 0 && pwmBack == 0) {
+    delay(LOOP_DELAY);
+    return;
+  }
+  
+  // Set initialized flag once we get valid input
+  if (!initialized && (pwmFront > 0 || pwmBack > 0)) {
+    initialized = true;
+  }
+  
+  // Check for direction changes
+  boolean frontDirectionChanged = (frontState != 0 && frontState != prevFrontState && prevFrontState != 0);
+  boolean backDirectionChanged = (backState != 0 && backState != prevBackState && prevBackState != 0);
+  
+  // Sync positions when direction changes to eliminate phantom positions
+  if (frontDirectionChanged) {
+    // Reset to physical limits when direction changes
+    if (prevFrontState > 0) {
+      // Was moving positive, now changing direction - reset to max
+      frontMasterPos = SERVO_MAX;
+      frontSlavePos = SERVO_MIN;
+    } else if (prevFrontState < 0) {
+      // Was moving negative, now changing direction - reset to min
+      frontMasterPos = SERVO_MIN;
+      frontSlavePos = SERVO_MAX;
+    }
+  }
+  
+  if (backDirectionChanged) {
+    // Reset to physical limits when direction changes
+    if (prevBackState > 0) {
+      // Was moving positive, now changing direction - reset to max
+      backMasterPos = SERVO_MAX;
+      backSlavePos = SERVO_MIN;
+    } else if (prevBackState < 0) {
+      // Was moving negative, now changing direction - reset to min
+      backMasterPos = SERVO_MIN;
+      backSlavePos = SERVO_MAX;
+    }
+  }
+  
+  // Apply movement to front pair (master and slave)
+  if (frontState != 0) {
+    // Update master position with limits
+    int newFrontMasterPos = frontMasterPos + STEP_SIZE * frontState;
+    if (newFrontMasterPos >= SERVO_MIN && newFrontMasterPos <= SERVO_MAX) {
+      frontMasterPos = newFrontMasterPos;
+      
+      // Update slave position (opposite direction) with limits
+      int newFrontSlavePos = frontSlavePos - STEP_SIZE * frontState;
+      if (newFrontSlavePos >= SERVO_MIN && newFrontSlavePos <= SERVO_MAX) {
+        frontSlavePos = newFrontSlavePos;
+      }
+    }
+  }
+  
+  // Apply movement to back pair (master and slave)
+  if (backState != 0) {
+    // Update master position with limits
+    int newBackMasterPos = backMasterPos + STEP_SIZE * backState;
+    if (newBackMasterPos >= SERVO_MIN && newBackMasterPos <= SERVO_MAX) {
+      backMasterPos = newBackMasterPos;
+      
+      // Update slave position (opposite direction) with limits
+      int newBackSlavePos = backSlavePos - STEP_SIZE * backState;
+      if (newBackSlavePos >= SERVO_MIN && newBackSlavePos <= SERVO_MAX) {
+        backSlavePos = newBackSlavePos;
+      }
+    }
+  }
+  
+  // Write positions to servos
+  frontLeftServo.write(frontMasterPos);  // Master
+  frontRightServo.write(frontSlavePos);  // Slave (opposite movement)
+  backLeftServo.write(backMasterPos);    // Master
+  backRightServo.write(backSlavePos);    // Slave (opposite movement)
+  
+  // Store current states for next loop
+  prevFrontState = frontState;
+  prevBackState = backState;
+  
+  delay(LOOP_DELAY);  // Adjust for smoothness
+}
+
+// Helper: returns -1, 0, or 1 based on deadzone logic
+int getMovementState(int pwm, int center) {
+  if (pwm == 0) return 0;  // Handle no signal
+  if (pwm > center + DEADZONE) return 1;
+  else if (pwm < center - DEADZONE) return -1;
+  else return 0;
+}
+
+// Center all servos at the middle of their range of motion
+void centerAllServos() {
+  frontMasterPos = SERVO_CENTER;
+  frontSlavePos = SERVO_CENTER;
+  backMasterPos = SERVO_CENTER;
+  backSlavePos = SERVO_CENTER;
+  
+  frontLeftServo.write(frontMasterPos);
+  frontRightServo.write(frontSlavePos);
+  backLeftServo.write(backMasterPos);
+  backRightServo.write(backSlavePos);
+  
+  delay(500);  // Give servos time to reach center position
+}
